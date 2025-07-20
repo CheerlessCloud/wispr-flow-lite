@@ -23,6 +23,7 @@ A powerful voice-to-text transcription app that works system-wide. Simply hold d
 - 🔄 **Robust Error Handling** - Automatic retries for API calls and better resource management
 - 📊 **Memory Management** - Prevents crashes during long recordings
 - 🔍 **Advanced Logging** - Better error tracking and debugging
+- 🖥️ **Auto-start Service** - Systemd integration with PipeWire support for seamless Linux experience
 
 ## 🚀 Quick Start
 
@@ -82,6 +83,21 @@ A powerful voice-to-text transcription app that works system-wide. Simply hold d
    - Hold Option/Alt key to record
    - Release to transcribe
    - Ctrl+C to quit
+
+3. **Auto-start on login (Linux)**
+   ```bash
+   # Install as systemd user service with PipeWire support
+   python3 install_service.py install
+   
+   # Check service status
+   python3 install_service.py status
+   
+   # View logs
+   python3 install_service.py logs
+   
+   # Uninstall service
+   python3 install_service.py uninstall
+   ```
 
 For detailed usage instructions and configuration options, see our [User Guide](docs/user-guide.md).
 
