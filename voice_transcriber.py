@@ -107,6 +107,9 @@ class VoiceTranscriber:
         # Language setting
         self.language = os.getenv('LANGUAGE', 'en')
         
+        # Transcription model setting
+        self.transcription_model = os.getenv('TRANSCRIPTION_MODEL', 'whisper-1')
+        
         # Keyboard listener
         self.keyboard_listener = None
         
