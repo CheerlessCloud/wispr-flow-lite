@@ -125,7 +125,13 @@ class VoiceTranscriber:
         
         logger.info(f"🎙️ Voice Transcriber initialized")
         logger.info(f"📋 Hotkey: Option/Alt key")
-        logger.info(f"🌍 Language: {self.language}")
+
+        if self.language and self.language.lower() != 'auto':
+            logger.info(f"🌍 Language: {self.language} (specific)")
+        else:
+            logger.info(f"🌍 Language: automatic detection (supports multilingual)")
+
+        logger.info(f"🤖 Transcription model: {self.transcription_model}")
         logger.info(f"⏱️ Max recording time: {self.record_seconds}s")
 
     def _initialize_audio(self):
@@ -166,58 +172,67 @@ class VoiceTranscriber:
         """Remove filler words and clean up the transcribed text"""
         if not text:
             return ""
-            
-        # Convert to lowercase for processing
-        words = text.lower().split()
+        
+        logger.info(f"🧹 Cleaning text: '{text}'")
+        
+        # Split into words, preserving original case for final output
+        original_words = text.split()
         
         # Remove filler words if enabled
         remove_fillers = os.getenv('REMOVE_FILLER_WORDS', 'true').lower() == 'true'
         if remove_fillers:
             cleaned_words = []
             i = 0
-            while i < len(words):
-                word = words[i].strip('.,!?;:"()[]{}')
+            while i < len(original_words):
+                # Check for filler words using lowercase comparison but keep original case
+                word_lower = original_words[i].strip('.,!?;:"()[]{}').lower()
                 
                 # Check for multi-word fillers like "you know", "i mean"
                 skip = False
                 for filler_length in [3, 2, 1]:  # Check longer phrases first
-                    if i + filler_length <= len(words):
-                        phrase = ' '.join(words[i:i+filler_length]).strip('.,!?;:"()[]{}')
-                        if phrase in self.filler_words:
+                    if i + filler_length <= len(original_words):
+                        # Create phrase in lowercase for comparison
+                        phrase_words = original_words[i:i+filler_length]
+                        phrase_lower = ' '.join([w.strip('.,!?;:"()[]{}').lower() for w in phrase_words])
+                        
+                        # Only check English filler words to avoid removing Russian words
+                        if phrase_lower in self.filler_words:
+                            logger.debug(f"🗑️ Removing filler: '{' '.join(phrase_words)}'")
                             i += filler_length
                             skip = True
                             break
                 
                 if not skip:
-                    cleaned_words.append(words[i])
+                    cleaned_words.append(original_words[i])
                     i += 1
             
-            words = cleaned_words
+            original_words = cleaned_words
         
         # Reconstruct text
-        cleaned_text = ' '.join(words)
+        cleaned_text = ' '.join(original_words)
         
         # Basic grammar improvements
         cleaned_text = self.improve_grammar(cleaned_text)
         
+        logger.info(f"✨ Cleaned text: '{cleaned_text}'")
         return cleaned_text
     
     def improve_grammar(self, text):
-        """Basic grammar improvements"""
+        """Basic grammar improvements for multilingual text"""
         if not text:
             return ""
             
-        # Capitalize first letter
+        # Capitalize first letter (works for both Latin and Cyrillic)
         text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
         
-        # Capitalize after periods
-        text = re.sub(r'(\. )([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
+        # Capitalize after periods (works for any Unicode letters)
+        text = re.sub(r'(\. )([a-zа-я])', lambda m: m.group(1) + m.group(2).upper(), text, flags=re.UNICODE)
         
         # Fix common spacing issues
         text = re.sub(r'\s+', ' ', text)  # Multiple spaces to single space
         text = re.sub(r'\s+([.!?,:;])', r'\1', text)  # Remove space before punctuation
         
-        # Capitalize 'I'
+        # Capitalize 'I' (English only to avoid affecting Russian)
         text = re.sub(r'\bi\b', 'I', text)
         
         return text.strip()
@@ -378,11 +393,21 @@ class VoiceTranscriber:
         """Transcribe audio file using OpenAI Whisper API with retry logic"""
         try:
             with open(audio_file_path, "rb") as audio_file:
-                transcript = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    language=self.language
-                )
+                # Prepare transcription parameters
+                transcription_params = {
+                    "model": self.transcription_model,
+                    "file": audio_file
+                }
+                
+                # Add language parameter only if not using automatic detection
+                if self.language and self.language.lower() != 'auto':
+                    transcription_params["language"] = self.language
+                    logger.debug(f"🌍 Using specified language: {self.language}")
+                else:
+                    logger.debug("🔍 Using automatic language detection")
+                
+                transcript = self.client.audio.transcriptions.create(**transcription_params)
+                logger.info(f"📝 Raw transcription: '{transcript.text}'")
                 return transcript.text
         except Exception as e:
             logger.error(f"Error during transcription: {e}")
@@ -422,12 +447,70 @@ class VoiceTranscriber:
             # Get typing interval from config
             interval = float(os.getenv('TYPING_INTERVAL', 0.01))
             
-            # Type the text
-            pyautogui.write(text, interval=interval)
+            logger.info(f"⌨️ Typing text: '{text}'")
+            
+            # Determine the best typing method
+            typing_method = os.getenv('TYPING_METHOD', 'auto').lower()
+            
+            if typing_method == 'auto':
+                # Smart auto-detection: check if text contains non-ASCII characters
+                has_non_ascii = not text.isascii()
+                if has_non_ascii:
+                    logger.info(f"🔍 Detected non-ASCII characters, using clipboard method")
+                    typing_method = 'clipboard'
+                else:
+                    logger.info(f"🔍 Text is ASCII-only, using direct method")
+                    typing_method = 'direct'
+            
+            if typing_method == 'clipboard':
+                # Method 1: Use clipboard for Unicode support
+                try:
+                    import pyperclip
+                    pyperclip.copy(text)
+                    time.sleep(0.1)
+                    # Paste using Ctrl+V
+                    pyautogui.hotkey('ctrl', 'v')
+                    logger.info("✅ Text typed using clipboard method")
+                    return
+                except Exception as clipboard_e:
+                    logger.warning(f"⚠️ Clipboard method failed: {clipboard_e}")
+                    # Fall back to direct method if clipboard fails
+                    logger.info("🔄 Falling back to direct method...")
+                    typing_method = 'direct'
+            
+            if typing_method == 'direct':
+                # Method 2: Direct typing
+                try:
+                    pyautogui.write(text, interval=interval)
+                    logger.info("✅ Text typed using direct method")
+                    return
+                except Exception as direct_e:
+                    logger.warning(f"⚠️ Direct method failed: {direct_e}")
+                    # Fall back to character-by-character method
+                    logger.info("🔄 Falling back to character-by-character method...")
+            
+            # Method 3: Character-by-character with key codes (fallback)
+            logger.info("🔄 Using character-by-character fallback...")
+            for char in text:
+                try:
+                    if char.isascii():
+                        pyautogui.write(char)
+                    else:
+                        # For non-ASCII characters, try typing via key events
+                        pyautogui.typewrite([char])
+                    time.sleep(interval)
+                except Exception as char_e:
+                    logger.warning(f"⚠️ Failed to type character '{char}': {char_e}")
+                    # Skip problematic characters
+                    continue
+            
+            logger.info("✅ Text typed using character-by-character method")
             
         except Exception as e:
+            logger.error(f"❌ Error typing text: {e}")
             print(f"❌ Error typing text: {e}")
             print("💡 Make sure to click in a text field before recording")
+            print("💡 Try setting TYPING_METHOD=clipboard in .env for better Unicode support")
     
     def on_press(self, key):
         """Handle key press events"""
