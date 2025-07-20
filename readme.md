@@ -5,7 +5,35 @@
 [![OpenAI](https://img.shields.io/badge/OpenAI-Whisper-green.svg)](https://platform.openai.com/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey.svg)](https://github.com/tommyyau/wispr-flow-lite)
 
-A powerful voice-to-text transcription app that works system-wide. Simply hold down the Option/Alt key while speaking, and release it to have your words transcribed directly where your cursor is positioned. Built with OpenAI's Whisper API for high-quality transcription.
+> **🚀 Enhanced Fork** - This fork adds significant improvements including configurable hotkeys, multilingual support, Linux auto-start, and modern audio system compatibility.
+
+## 🆕 What's New in This Fork
+
+### 🎛️ **Configurable Hotkey Combinations**
+- **Custom key combinations**: `alt+win`, `ctrl+shift+f9`, `ctrl+alt+r`, etc.
+- **Cross-platform support**: `win`/`cmd`/`super` work on Windows/Mac/Linux
+- **Smart fallback**: Invalid hotkeys automatically fall back to safe defaults
+- **Easy configuration**: Just set `HOTKEY=your_combination` in `.env`
+
+### 🌍 **Enhanced Multilingual Support**
+- **Automatic language detection**: Set `LANGUAGE=auto` for seamless multilingual transcription
+- **Unicode text handling**: Smart clipboard fallback for Cyrillic and non-ASCII characters
+- **Improved text processing**: Language-aware grammar improvements and filler word removal
+
+### 🖥️ **Linux Auto-Start Integration**
+- **Systemd user service**: One-command installation with `python3 install_service.py install`
+- **PipeWire compatibility**: Modern Linux audio system support with proper dependencies
+- **Smart permissions**: No audio group needed - uses modern systemd-logind permissions
+- **Service management**: Easy start/stop/status/logs commands
+
+### 🔊 **Modern Audio System Support**
+- **PipeWire integration**: Full compatibility with Ubuntu 23.04+ default audio stack
+- **Enhanced error handling**: Better audio device detection and fallback mechanisms
+- **Memory management**: Configurable limits to prevent crashes during long recordings
+
+---
+
+A powerful voice-to-text transcription app that works system-wide. Hold down your configured hotkey while speaking, and release it to have your words transcribed directly where your cursor is positioned. Built with OpenAI's Whisper API for high-quality transcription.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/tommyyau/wispr-flow-lite/main/docs/demo.gif" alt="WisprFlow Lite Demo">
@@ -13,7 +41,7 @@ A powerful voice-to-text transcription app that works system-wide. Simply hold d
 
 ## ✨ Features
 
-- 🎯 **Push-to-Talk** - Hold Option key to record, release to transcribe
+- 🎯 **Push-to-Talk** - Hold your configured hotkey to record, release to transcribe
 - 🎤 **High-quality transcription** - Uses OpenAI Whisper API
 - 🧹 **Smart text cleaning** - Removes filler words (um, uh, etc.)
 - 📝 **Direct typing** - Text appears where your cursor is
