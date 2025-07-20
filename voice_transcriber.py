@@ -30,6 +30,8 @@ from dotenv import load_dotenv
 from pynput import keyboard
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
+import threading
+from typing import Set, List, Optional, Union, Callable
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -41,6 +43,218 @@ load_dotenv()
 
 MAX_RETRIES = 3
 RETRY_WAIT_SECONDS = 2
+
+class HotkeyParser:
+    """Parser for hotkey strings into pynput Key objects"""
+    
+    # Mapping of string names to pynput Key objects
+    MODIFIER_MAP = {
+        'ctrl': keyboard.Key.ctrl,
+        'control': keyboard.Key.ctrl,
+        'alt': keyboard.Key.alt,
+        'option': keyboard.Key.alt,  # macOS naming
+        'shift': keyboard.Key.shift,
+        'cmd': keyboard.Key.cmd,     # macOS
+        'win': keyboard.Key.cmd,     # Windows (same as cmd in pynput)
+        'super': keyboard.Key.cmd,   # Linux
+        'meta': keyboard.Key.cmd,    # Alternative naming
+    }
+    
+    SPECIAL_KEYS_MAP = {
+        'space': keyboard.Key.space,
+        'tab': keyboard.Key.tab,
+        'enter': keyboard.Key.enter,
+        'return': keyboard.Key.enter,
+        'backspace': keyboard.Key.backspace,
+        'delete': keyboard.Key.delete,
+        'esc': keyboard.Key.esc,
+        'escape': keyboard.Key.esc,
+    }
+    
+    @classmethod
+    def parse_hotkey(cls, hotkey_string: str) -> Optional[Set[Union[keyboard.Key, keyboard.KeyCode]]]:
+        """Parse a hotkey string into a set of pynput Key objects"""
+        if not hotkey_string or not isinstance(hotkey_string, str):
+            return None
+            
+        # Normalize the string: lowercase and split by +
+        parts = [part.strip().lower() for part in hotkey_string.split('+')]
+        
+        if not parts:
+            return None
+            
+        keys = set()
+        
+        for part in parts:
+            key = cls._parse_single_key(part)
+            if key is None:
+                return None
+            keys.add(key)
+            
+        return keys if keys else None
+    
+    @classmethod
+    def _parse_single_key(cls, key_string: str) -> Optional[Union[keyboard.Key, keyboard.KeyCode]]:
+        """Parse a single key string into a pynput Key object"""
+        key_string = key_string.lower().strip()
+        
+        # Check modifiers first
+        if key_string in cls.MODIFIER_MAP:
+            return cls.MODIFIER_MAP[key_string]
+            
+        # Check special keys
+        if key_string in cls.SPECIAL_KEYS_MAP:
+            return cls.SPECIAL_KEYS_MAP[key_string]
+            
+        # Check function keys (f1-f24)
+        import re
+        if re.match(r'^f([1-9]|1[0-9]|2[0-4])$', key_string):
+            fn_num = int(key_string[1:])
+            # F1 is VK 112, F2 is 113, etc.
+            return keyboard.KeyCode.from_vk(111 + fn_num)
+            
+        # Check single character keys
+        if len(key_string) == 1 and key_string.isalnum():
+            return keyboard.KeyCode.from_char(key_string)
+            
+        return None
+    
+    @classmethod
+    def validate_hotkey(cls, hotkey_string: str) -> tuple[bool, str]:
+        """Validate a hotkey string and return validation result"""
+        if not hotkey_string:
+            return False, "Hotkey string cannot be empty"
+            
+        keys = cls.parse_hotkey(hotkey_string)
+        if keys is None:
+            return False, f"Invalid hotkey format: '{hotkey_string}'"
+            
+        if len(keys) == 0:
+            return False, "No valid keys found in hotkey string"
+            
+        if len(keys) > 4:
+            return False, "Too many keys in combination (maximum 4)"
+            
+        return True, "Valid hotkey"
+
+class HotkeyManager:
+    """Advanced hotkey manager supporting key combinations"""
+    
+    def __init__(self):
+        self.listener = None
+        self.is_listening = False
+        
+        # Track currently pressed keys
+        self.pressed_keys: Set[Union[keyboard.Key, keyboard.KeyCode]] = set()
+        
+        # Registered hotkey combinations
+        self.hotkeys = {}
+        
+        # Debouncing
+        self.debounce_ms = 100
+        
+        # Thread safety
+        self.lock = threading.Lock()
+    
+    def register_hotkey(self, hotkey_string: str, on_press: Callable = None, on_release: Callable = None) -> bool:
+        """Register a hotkey combination"""
+        keys = HotkeyParser.parse_hotkey(hotkey_string)
+        if keys is None:
+            return False
+            
+        key_set = frozenset(keys)
+        
+        with self.lock:
+            self.hotkeys[key_set] = {
+                'on_press': on_press,
+                'on_release': on_release,
+                'hotkey_string': hotkey_string,
+                'is_active': False,
+                'last_triggered': 0
+            }
+            
+        return True
+    
+    def _normalize_key(self, key: Union[keyboard.Key, keyboard.KeyCode]) -> Union[keyboard.Key, keyboard.KeyCode]:
+        """Normalize keys for consistent comparison"""
+        # Handle left/right modifier keys - treat them as the same
+        if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
+            return keyboard.Key.ctrl
+        elif key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
+            return keyboard.Key.alt
+        elif key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
+            return keyboard.Key.shift
+        elif key == keyboard.Key.cmd_l or key == keyboard.Key.cmd_r:
+            return keyboard.Key.cmd
+        return key
+    
+    def _on_press(self, key: Union[keyboard.Key, keyboard.KeyCode]):
+        """Handle key press events"""
+        key = self._normalize_key(key)
+        
+        with self.lock:
+            self.pressed_keys.add(key)
+            self._check_hotkey_matches()
+    
+    def _on_release(self, key: Union[keyboard.Key, keyboard.KeyCode]):
+        """Handle key release events"""
+        key = self._normalize_key(key)
+        
+        with self.lock:
+            self.pressed_keys.discard(key)
+            self._check_hotkey_releases()
+    
+    def _check_hotkey_matches(self):
+        """Check if any registered hotkeys match current pressed keys"""
+        for key_combination, hotkey_info in self.hotkeys.items():
+            if key_combination.issubset(self.pressed_keys):
+                if not hotkey_info['is_active']:
+                    hotkey_info['is_active'] = True
+                    if hotkey_info['on_press']:
+                        self._trigger_callback(hotkey_info['on_press'])
+    
+    def _check_hotkey_releases(self):
+        """Check for hotkey releases"""
+        for key_combination, hotkey_info in self.hotkeys.items():
+            if hotkey_info['is_active']:
+                if not key_combination.issubset(self.pressed_keys):
+                    hotkey_info['is_active'] = False
+                    if hotkey_info['on_release']:
+                        self._trigger_callback(hotkey_info['on_release'])
+    
+    def _trigger_callback(self, callback: Callable):
+        """Trigger callback in a separate thread"""
+        def run_callback():
+            try:
+                callback()
+            except Exception as e:
+                logger.error(f"Error in hotkey callback: {e}")
+        
+        threading.Thread(target=run_callback, daemon=True).start()
+    
+    def start_listening(self):
+        """Start the keyboard listener"""
+        if self.is_listening:
+            return
+            
+        self.listener = keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release
+        )
+        self.listener.start()
+        self.is_listening = True
+    
+    def stop_listening(self):
+        """Stop the keyboard listener"""
+        if self.listener:
+            self.listener.stop()
+            self.listener = None
+        self.is_listening = False
+        
+        with self.lock:
+            self.pressed_keys.clear()
+            for hotkey_info in self.hotkeys.values():
+                hotkey_info['is_active'] = False
 
 def get_input_device():
     """Find the best available input device"""
@@ -100,18 +314,15 @@ class VoiceTranscriber:
         # Initialize audio with retry
         self._initialize_audio()
         
-        # Using Option/Alt key as hotkey
-        self.using_option_key = True
-        self.option_pressed = False
+        # Hotkey configuration
+        self.hotkey_manager = HotkeyManager()
+        self.hotkey_string = os.getenv('HOTKEY', 'alt')
         
         # Language setting
         self.language = os.getenv('LANGUAGE', 'en')
         
         # Transcription model setting
         self.transcription_model = os.getenv('TRANSCRIPTION_MODEL', 'whisper-1')
-        
-        # Keyboard listener
-        self.keyboard_listener = None
         
         # Filler words to remove
         self.filler_words = {
@@ -126,8 +337,11 @@ class VoiceTranscriber:
             custom_list = [word.strip() for word in custom_fillers.split(',')]
             self.filler_words.update(custom_list)
         
+        # Setup hotkey
+        self._setup_hotkey()
+        
         logger.info(f"🎙️ Voice Transcriber initialized")
-        logger.info(f"📋 Hotkey: Option/Alt key")
+        logger.info(f"📋 Hotkey: {self.hotkey_string}")
 
         if self.language and self.language.lower() != 'auto':
             logger.info(f"🌍 Language: {self.language} (specific)")
@@ -136,6 +350,38 @@ class VoiceTranscriber:
 
         logger.info(f"🤖 Transcription model: {self.transcription_model}")
         logger.info(f"⏱️ Max recording time: {self.record_seconds}s")
+
+    def _setup_hotkey(self):
+        """Setup configurable hotkey from environment"""
+        # Validate hotkey string
+        is_valid, error_msg = HotkeyParser.validate_hotkey(self.hotkey_string)
+        
+        if not is_valid:
+            logger.warning(f"⚠️ Invalid hotkey '{self.hotkey_string}': {error_msg}")
+            logger.info("🔄 Falling back to default 'alt' hotkey")
+            self.hotkey_string = 'alt'
+        
+        # Register hotkey
+        success = self.hotkey_manager.register_hotkey(
+            hotkey_string=self.hotkey_string,
+            on_press=self.start_recording,
+            on_release=self.stop_recording
+        )
+        
+        if not success:
+            logger.error(f"❌ Failed to register hotkey: {self.hotkey_string}")
+            # Try fallback to alt
+            self.hotkey_string = 'alt'
+            success = self.hotkey_manager.register_hotkey(
+                hotkey_string=self.hotkey_string,
+                on_press=self.start_recording,
+                on_release=self.stop_recording
+            )
+            
+            if success:
+                logger.info("✅ Fallback to 'alt' hotkey successful")
+            else:
+                raise Exception("Failed to setup any working hotkey")
 
     def _initialize_audio(self):
         """Initialize PyAudio with retry logic"""
@@ -265,7 +511,7 @@ class VoiceTranscriber:
             self.is_recording = True
             self.audio_frames = []
             
-            logger.info("🎤 Recording... Release Option/Alt key when done.")
+            logger.info(f"🎤 Recording... Release '{self.hotkey_string}' when done.")
             
             start_time = time.time()
             last_device_check = time.time()
@@ -515,46 +761,21 @@ class VoiceTranscriber:
             print("💡 Make sure to click in a text field before recording")
             print("💡 Try setting TYPING_METHOD=clipboard in .env for better Unicode support")
     
-    def on_press(self, key):
-        """Handle key press events"""
-        try:
-            # Check if it's the Option/Alt key
-            if key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
-                if not self.option_pressed:
-                    self.option_pressed = True
-                    # Start recording immediately
-                    self.start_recording()
-        except AttributeError:
-            pass
-
-    def on_release(self, key):
-        """Handle key release events"""
-        try:
-            # Check if it's the Option/Alt key
-            if key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
-                self.option_pressed = False
-                # Stop recording and process immediately
-                self.stop_recording()
-        except AttributeError:
-            pass
     
     def run(self):
         """Main loop - listen for hotkey"""
         try:
-            # Start keyboard listener with both press and release handlers
-            self.keyboard_listener = keyboard.Listener(
-                on_press=self.on_press,
-                on_release=self.on_release
-            )
-            self.keyboard_listener.start()
+            # Start hotkey manager
+            self.hotkey_manager.start_listening()
             
-            print(f"🎯 Ready! Press and hold Option/Alt key to record, release to transcribe.")
+            print(f"🎯 Ready! Press and hold '{self.hotkey_string}' to record, release to transcribe.")
             print("💡 Position your cursor where you want text to appear")
             print("⏹️ Press Ctrl+C to quit")
             print()
             
             # Keep the program running
-            self.keyboard_listener.join()
+            while True:
+                time.sleep(0.1)
             
         except KeyboardInterrupt:
             print("\n👋 Goodbye!")
@@ -589,9 +810,9 @@ class VoiceTranscriber:
             if self.is_recording:
                 self.stop_recording()
 
-            # Clean up keyboard listener
-            if self.keyboard_listener:
-                self.keyboard_listener.stop()
+            # Clean up hotkey manager
+            if self.hotkey_manager:
+                self.hotkey_manager.stop_listening()
 
             # Clean up audio resources
             self._cleanup_stream()
